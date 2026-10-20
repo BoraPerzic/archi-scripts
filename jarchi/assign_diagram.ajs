@@ -1,0 +1,272 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Bora Perzic
+
+/*
+ * assign_diagram.ajs
+ * ------------------
+ * Link an element on a diagram to any view in the model.
+ *
+ * Select exactly one element on an open diagram, run this script, pick a view
+ * from the list, and a small navigation handle is drawn on that element
+ * pointing at the chosen view. Double-click the handle in Archi to open that
+ * view. In Archi's HTML report the handle becomes a click-through link.
+ *
+ * The script NEVER saves the model. Save it yourself in Archi.
+ *
+ * Usage: run from the jArchi Scripts Manager with one element selected on a view.
+ *
+ * Behaviour:
+ *   - exactly one element selected      -> proceeds
+ *   - nothing / more than one selected  -> message, stops
+ *   - selection is not a diagram object -> message, stops
+ *   - model has no views                -> message, stops
+ *   - no room for another handle        -> message, stops, places nothing
+ *   - dialog cancelled                  -> nothing placed
+ *
+ * An element that already has a handle is not an error: new handles stack to
+ * the LEFT of existing ones, bottom-right of the element. To remove a handle,
+ * select it in Archi and press Delete.
+ *
+ * Structure: the dialog layer (pickTargetView) is kept separate from the
+ * handle-drawing logic (placeHandle / computeHandlePosition) so one can be
+ * changed without disturbing the other.
+ */
+
+// ===========================================================================
+// CONSTANTS -- edit here
+// ===========================================================================
+
+// Size of the handle (a square), in px.
+var ASSIGN_TILE = 15;
+
+// Gap between the handle and the element's right/bottom edge, in px.
+var ASSIGN_INSET = 6;
+
+// ===========================================================================
+// HANDLE-DRAWING LOGIC (no UI in this section)
+// ===========================================================================
+
+/**
+ * Count the view-reference handles already sitting on this diagram object.
+ *
+ * Counts all of them, however they were placed. Direct children only: a
+ * reference nested deeper belongs to a nested element, not to this one.
+ *
+ * Note: jArchi computes the type string "diagram-model-reference" at runtime
+ * from Archi's class name (DiagramModelReference), so it does not appear as a
+ * literal anywhere in the plugin. That is expected.
+ */
+function countExistingHandles(parentObject) {
+    var n = 0;
+
+    // Use the jArchi selector $(parent).children(type), not the raw `.children`
+    // property (an EMF list with no .each() and no .type). children() looks at
+    // direct children only; find() would recurse into nested elements.
+    $(parentObject).children("diagram-model-reference").each(function () {
+        n++;
+    });
+
+    return n;
+}
+
+/**
+ * Where the next handle goes, in coordinates relative to the parent element.
+ *
+ * The first handle sits bottom-right inside the element's bounds. Each further
+ * handle steps one tile plus inset to the LEFT, on the same line.
+ *
+ * Returns null if it will not fit; the caller then places nothing.
+ */
+function computeHandlePosition(parentWidth, parentHeight, existingCount) {
+    var x = parentWidth - ASSIGN_TILE - ASSIGN_INSET
+            - (existingCount * (ASSIGN_TILE + ASSIGN_INSET));
+    var y = parentHeight - ASSIGN_TILE - ASSIGN_INSET;
+
+    if (x < 0 || y < 0) {
+        return null;
+    }
+    return { x: x, y: y };
+}
+
+/**
+ * Draw the handle. Returns the new view-reference object.
+ *
+ * Creates an Archi DiagramModelReference as a child of the selected element,
+ * with bounds relative to that element:
+ *
+ *   <child xsi:type="archimate:DiagramModelReference" id="..." model="{view id}">
+ *     <bounds x="{x}" y="{y}" width="15" height="15"/>
+ *   </child>
+ *
+ * jArchi signature (five arguments, no overloads):
+ *
+ *   createViewReference(view, x, y, width, height)
+ *
+ * Throws if the call returns nothing, rather than reporting success on a
+ * handle that was never drawn.
+ */
+function placeHandle(parentObject, targetView, pos) {
+    var ref = parentObject.createViewReference(
+        targetView, pos.x, pos.y, ASSIGN_TILE, ASSIGN_TILE
+    );
+
+    if (!ref) {
+        throw "createViewReference returned nothing -- handle was NOT created.";
+    }
+    return ref;
+}
+
+// ===========================================================================
+// DIALOG LAYER (all UI lives here)
+// ===========================================================================
+
+/**
+ * Ask which view to point at.
+ *
+ * Uses jArchi's built-in window.promptSelection, which has a filter box that
+ * narrows the list as you type, so it stays usable on models with hundreds of
+ * views.
+ *
+ * The list is EVERY view in the model, unfiltered, including the current one.
+ *
+ * promptSelection returns the chosen label as a string, so duplicate view
+ * names get a suffix such as "  (2)" and are mapped back afterwards; a bare
+ * name lookup could silently pick the wrong view.
+ *
+ * Returns the chosen view object, or null if cancelled.
+ */
+function pickTargetView(views) {
+    var labels = [];
+    var byLabel = {};
+
+    for (var i = 0; i < views.length; i++) {
+        var v = views[i];
+        var label = v.name;
+
+        // Disambiguate duplicates so the mapping back is never ambiguous.
+        if (byLabel.hasOwnProperty(label)) {
+            var n = 2;
+            while (byLabel.hasOwnProperty(label + "  (" + n + ")")) {
+                n++;
+            }
+            label = label + "  (" + n + ")";
+        }
+
+        labels.push(label);
+        byLabel[label] = v;
+    }
+
+    labels.sort();
+
+    var chosen = window.promptSelection("Assign a diagram to this element", labels);
+    if (chosen === null || chosen === undefined || chosen === "") {
+        return null;
+    }
+
+    var view = byLabel[chosen];
+    if (!view) {
+        // Never guess at a near-match; that is how the wrong view gets linked.
+        throw "Could not map the chosen entry back to a view: " + chosen;
+    }
+    return view;
+}
+
+// ===========================================================================
+// MAIN
+// ===========================================================================
+
+console.show();
+console.clear();
+
+(function main() {
+
+    // --- selection: exactly one diagram element ----------------------------
+
+    var sel = $(selection);
+    var count = sel.size();
+
+    if (count === 0) {
+        window.alert("Nothing selected.\n\n"
+            + "Select exactly one element on an open diagram, then run again.");
+        console.log("Not placed: nothing selected.");
+        return;
+    }
+
+    if (count > 1) {
+        window.alert("Select exactly one element.\n\n"
+            + count + " objects are selected. This tool places one deliberate "
+            + "assignment per run -- it does not loop over a multi-selection.");
+        console.log("Not placed: " + count + " objects selected, expected exactly 1.");
+        return;
+    }
+
+    var parentObject = sel.first();
+
+    // A folder or a concept in the model tree is not a diagram object, and has
+    // no bounds to place a handle inside.
+    if (parentObject.type === "archimate-diagram-model"
+            || !parentObject.bounds
+            || parentObject.bounds.width === undefined
+            || parentObject.bounds.width === null) {
+        window.alert("That is not an element on a diagram.\n\n"
+            + "Select an element on an open view -- not a view, a folder, or a "
+            + "concept in the model tree.");
+        console.log("Not placed: selection is not a diagram object (type: "
+            + parentObject.type + ").");
+        return;
+    }
+
+    var subjectName = parentObject.name || "(unnamed)";
+
+    // --- the view catalogue ------------------------------------------------
+    //
+    // Views come from the open model only, so every view you can pick exists.
+
+    var views = [];
+    $(model).find("view").each(function (v) {
+        views.push(v);
+    });
+
+    if (views.length === 0) {
+        window.alert("This model has no views to assign.");
+        console.log("Not placed: model contains no views.");
+        return;
+    }
+
+    // --- check there is room BEFORE asking ---------------------------------
+    //
+    // Refuse rather than overflow: never place a handle outside the element,
+    // never shrink it to fit. Checked before the dialog opens.
+
+    var existing = countExistingHandles(parentObject);
+    var w = parentObject.bounds.width;
+    var h = parentObject.bounds.height;
+    var pos = computeHandlePosition(w, h, existing);
+
+    if (pos === null) {
+        var needed = (existing + 1) * (ASSIGN_TILE + ASSIGN_INSET) + ASSIGN_INSET;
+        var msg = "Not placed: \"" + subjectName + "\" is " + w + "px wide, "
+            + h + "px high -- no room for handle " + (existing + 1)
+            + " (needs " + needed + "px wide).";
+        window.alert(msg);
+        console.log(msg);
+        return;
+    }
+
+    // --- ask ---------------------------------------------------------------
+
+    var targetView = pickTargetView(views);
+    if (targetView === null) {
+        console.log("Cancelled -- nothing placed.");
+        return;
+    }
+
+    // --- draw --------------------------------------------------------------
+
+    placeHandle(parentObject, targetView, pos);
+
+    console.log("Assigned: \"" + subjectName + "\" -> view \"" + targetView.name
+        + "\"  (handle " + (existing + 1) + " of " + (existing + 1) + ")");
+    console.log("Model NOT saved -- save it yourself in Archi.");
+
+})();
