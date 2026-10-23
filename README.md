@@ -6,8 +6,6 @@ Small scripts for [Archi](https://www.archimatetool.com/) users, shared under th
 
 Select an element on a diagram, pick any view in your model from a drop-down list, and the script draws a small handle on the element that links to that view. In Archi, double-click the handle to open the view. In Archi's HTML report (Report > HTML…) the handle becomes a click-through link, so readers can move from a capability to its own diagram, and on from there.
 
-![assign_diagram in action](docs/assign_diagram.gif)
-
 ### Requirements
 - Archi (tested on 5.7.0)
 - jArchi, Archi's scripting plugin (tested on 1.11.0)
